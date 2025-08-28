@@ -1,0 +1,143 @@
+[project]
+name = "fastapi-template"
+version = "0.1.0"
+description = "FastAPI template"
+authors = [{ name = "Harsh Verma", email = "harsh.verma@punt.partners" }]
+readme = "README.md"
+keywords = ['python']
+requires-python = ">=3.10,<4.0"
+classifiers = [
+    "Intended Audience :: Developers",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "alembic==1.15.1",
+    "asyncpg==0.30.0",
+    "fastapi==0.115.8",
+    "google>=3.0.0",
+    "google-api-python-client>=2.179.0",
+    "google-auth>=2.40.3",
+    "google-auth-oauthlib>=1.2.2",
+    "greenlet>=3.2.3",
+    "pydantic-settings==2.8.1",
+    "sqlalchemy==2.0.39",
+    "uvicorn==0.34.0",
+]
+
+[tool.uv]
+dev-dependencies = [
+    "pre-commit>=2.20.0",
+    "deptry>=0.20.0",
+    "mypy>=0.991",
+    "ruff>=0.6.9",
+    "pytest>=8.4.0",
+    "pytest-asyncio>=1.0.0",
+    "testcontainers[postgresql]>=4.10.0",
+    "pytest-cov>=6.1.1",
+    "psycopg2-binary>=2.9.10",
+    "httpx>=0.28.1",
+]
+
+[tool.mypy]
+files = ["api"]
+disallow_untyped_defs = true
+disallow_any_unimported = true
+no_implicit_optional = true
+check_untyped_defs = true
+warn_return_any = true
+warn_unused_ignores = true
+show_error_codes = true
+
+[tool.ruff]
+line-length = 100
+fix = true
+exclude = ["migrations/"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]  # Allow assert statements in tests
+
+[tool.ruff.lint]
+select = [
+    # flake8-2020
+    "YTT",
+    # flake8-bandit
+    "S",
+    # flake8-bugbear
+    "B",
+    # flake8-builtins
+    "A",
+    # flake8-comprehensions
+    "C4",
+    # flake8-debugger
+    "T10",
+    # flake8-simplify
+    "SIM",
+    # isort
+    "I",
+    # mccabe
+    "C90",
+    # pycodestyle
+    "E", "W",
+    # pyflakes
+    "F",
+    # pygrep-hooks
+    "PGH",
+    # pyupgrade
+    "UP",
+    # ruff
+    "RUF",
+    # tryceratops
+    "TRY",
+]
+ignore = [
+    # LineTooLong
+    "E501",
+    # DoNotAssignLambda
+    "E731",
+    "TRY002",
+    "TRY003",
+]
+
+[tool.ruff.format]
+preview = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = [
+    "--strict-markers",
+    "--strict-config",
+    "--cov=api",
+    "--cov-report=term-missing",
+    "--cov-report=html",
+    "--cov-fail-under=70",
+]
+markers = [
+    "docker: marks tests as requiring Docker (deselect with '-m \"not docker\"')",
+]
+
+[tool.coverage.run]
+source = ["api"]
+omit = [
+    "*/tests/*",
+    "*/migration/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]
