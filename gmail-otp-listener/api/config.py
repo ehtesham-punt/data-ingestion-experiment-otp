@@ -19,6 +19,11 @@ class Settings(BaseSettings):
     POSTGRES_USER: str
     POSTGRES_PASSWORD: str
     POSTGRES_URI: str = ""
+    REDIRECT_URI: str
+    CLIENT_SECRET_FILE: str
+    TOKEN_FILE: str
+    PORT: int
+    GMAIL_TOPIC_NAME: str
 
     @field_validator("POSTGRES_URI", mode="after")
     @classmethod
