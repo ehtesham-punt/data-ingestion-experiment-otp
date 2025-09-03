@@ -93,7 +93,7 @@ def parse_email(raw_email: bytes) -> ParsedEmail | None:
     # Check email freshness
     date_header = msg["Date"]
     email_datetime = parsedate_to_datetime(date_header)
-    if datetime.now(email_datetime.tzinfo) - email_datetime > timedelta(minutes=5):
+    if datetime.now(email_datetime.tzinfo) - email_datetime > timedelta(minutes=2):
         return None
 
     # Extract body (prefer HTML)

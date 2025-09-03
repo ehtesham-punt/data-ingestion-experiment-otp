@@ -1,15 +1,23 @@
 import asyncio
+import json
 import logging
-import tempfile
+import os
 from typing import Literal
 
-from playwright.async_api import async_playwright
 from pydantic import BaseModel
 from restate import Workflow
 
-# === INPUT / OUTPUT SCHEMAS ===
+# === Constants ===
+EXTENSION_PATH = "/Users/ehteshamtarique/Desktop/work-project/ShelfRadar-QConnect/chrome-extension"
+EXTENSION_ID = "pnpljeedaeicppojfpfmgmdcikhpihjf"
+OPTIONS_URL = f"chrome-extension://{EXTENSION_ID}/options.html"
+POPUP_URL = f"chrome-extension://{EXTENSION_ID}/popup.html"
+ZEPTO_BRAND_URL = "https://brands.zepto.co.in/login"
+
+login_wf = Workflow("login_workflow")
 
 
+# === Schemas ===
 class LoginInput(BaseModel):
     platformSync: Literal["zepto", "swiggy", "blinkit"]
     username: str
@@ -27,117 +35,150 @@ class OTPInput(BaseModel):
     otp: str
 
 
-# === WORKFLOW ===
-
-login_wf = Workflow("login_workflow")
-
-EXTENSION_PATH = "/Users/ehteshamtarique/Desktop/work-project/ShelfRadar-QConnect/chrome-extension"
-EXTENSION_ID = "pnpljeedaeicppojfpfmgmdcikhpihjf"
-OPTIONS_URL = f"chrome-extension://{EXTENSION_ID}/options.html"
-POPUP_URL = f"chrome-extension://{EXTENSION_ID}/popup.html"
-ZEPTO_BRAND_URL = "https://brands.zepto.co.in/login"
-
-
+# === Main Workflow ===
 @login_wf.main()
 async def login_workflow(ctx, input_config: LoginInput) -> LoginOutput:
     logger = logging.getLogger(__name__)
-    logger.info(
-        f"Starting login for {input_config.platformSync} with user: {input_config.username}"
-    )
+    logger.info(f"🚀 Starting login for {input_config.platformSync}")
 
-    playwright = await async_playwright().start()
-    user_data_dir = tempfile.mkdtemp(prefix="playwright_user_data_")
+    if input_config.platformSync != "zepto":
+        raise Exception(f"Platform {input_config.platformSync} is not supported.")
 
-    context = await playwright.chromium.launch_persistent_context(
-        user_data_dir=user_data_dir,
-        headless=False,
-        args=[
-            f"--disable-extensions-except={EXTENSION_PATH}",
-            f"--load-extension={EXTENSION_PATH}",
-        ],
-    )
+    # Build input dict for subprocess
+    input_dict = input_config.dict()
 
-    page = await context.new_page()
+    # Create unique coordination files for this workflow instance
+    workflow_id = ctx.key() or "default"
+    otp_file = f"/tmp/otp_{workflow_id}.txt"
+    result_file = f"/tmp/result_{workflow_id}.txt"
 
-    try:
-        if input_config.platformSync == "zepto":
-            # Step 1: Set extension settings
-            logger.info("🧩 Opening options page...")
-            options_page = await context.new_page()
-            await options_page.goto(OPTIONS_URL)
-            await options_page.wait_for_selector("#licenseKey")
+    # Delete existing files if they exist (for clean replay state)
+    for file_path in [otp_file, result_file]:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+            logger.info(f"🗑️ Deleted existing file: {file_path}")
 
-            logger.info("✍️ Setting config...")
-            await options_page.fill("#licenseKey", input_config.api_key)
-            await options_page.select_option("#apiBaseUrl", label=input_config.environment)
-            await options_page.click("#save")
-            await asyncio.sleep(1)
-            await options_page.close()
+    input_dict.update({
+        "extension_path": EXTENSION_PATH,
+        "options_url": OPTIONS_URL,
+        "popup_url": POPUP_URL,
+        "login_url": ZEPTO_BRAND_URL,
+        "otp_file": otp_file,
+        "result_file": result_file,
+    })
 
-            # Step 2: Perform Zepto login
-            logger.info("🌐 Navigating to Zepto brand login...")
-            await page.goto(ZEPTO_BRAND_URL)
-            await page.get_by_role("textbox", name="Email").fill(input_config.username)
-            await page.get_by_role("textbox", name="Password").fill(input_config.password)
-            await page.get_by_role("button", name="Log In").click()
+    # === Launch subprocess safely (only once) ===
+    async def create_subprocess():
+        # Check if subprocess is already running by checking for result file
+        if os.path.exists(result_file):
+            logger.info("📋 Checking existing subprocess status...")
+            with open(result_file) as f:
+                existing_status = json.loads(f.read())
 
-            # Step 3: Wait for OTP input via Restate
-            logger.info("🕐 Waiting for OTP from promise...")
-            otp_value = await asyncio.wait_for(ctx.promise("otp_wait"), timeout=500)
-            logger.info(f"✅ Received OTP: {otp_value}")
+            # If subprocess is still running (not final status), don't create new one
+            if existing_status.get("status") in [
+                "subprocess_created",
+                "browser_ready",
+                "waiting_for_otp",
+                "otp_submitted",
+            ]:
+                logger.info(f"🔄 Subprocess already running: {existing_status.get('message')}")
+                return {"subprocess_already_running": True, "current_status": existing_status}
 
-            # Step 4: Fill OTP and confirm
-            await page.get_by_role("textbox", name="OTP").fill(otp_value)
-            await page.get_by_role("button", name="Confirm").click()
-            logger.info("🔐 OTP submitted and login confirmed.")
+            # If subprocess completed, return the final result
+            if existing_status.get("status") in ["success", "error"]:
+                logger.info("📋 Subprocess already completed, reading result...")
+                return existing_status
 
-            # Step 5: Trigger sync from extension popup
-            logger.info("⚙️ Opening extension popup and triggering sync...")
-            popup_page = await context.new_page()
-            await popup_page.goto(POPUP_URL)
-            await popup_page.wait_for_selector("#startSync")
-            await popup_page.click("#startSync")
-            logger.info("✅ 'Start Sync' triggered.")
+        command = ["python3", "api/playwright_login_runner.py", json.dumps(input_dict)]
+        logger.info("🧠 Launching new subprocess...")
 
-            # Optional wait to ensure sync is complete
-            await page.wait_for_timeout(90000)
+        # Start subprocess in fire-and-forget mode
+        proc = await asyncio.create_subprocess_exec(
+            *command,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
 
-            # Step 6: Suspend workflow and wait for 'complete_workflow' signal
-            logger.info(
-                "⏸️ Suspending workflow. Waiting for 'complete_workflow' promise to be resolved..."
-            )
-            complete_promise = ctx.promise("complete_wait")
-            await complete_promise  # Suspend here until handler resolves
-            logger.info("✅ Received workflow completion signal.")
+        # Wait a moment for the initial status file to be created
+        await asyncio.sleep(2)
 
-            return LoginOutput(status="success", otp=otp_value)
+        logger.info(f"🚀 Subprocess started with PID: {proc.pid}")
+        return {"subprocess_started": True, "pid": proc.pid}
 
-        else:
-            raise Exception(f"Platform {input_config.platformSync} is not yet supported.")
+    subprocess_info = await ctx.run("create_subprocess", create_subprocess)
 
-    except asyncio.TimeoutError:
-        logger.exception("OTP was not received in time.")
-        await context.close()
-        await playwright.stop()
-        raise
-    except Exception:
-        logger.exception("Login workflow failed.")
-        raise
+    # If subprocess already completed, return early
+    if "status" in subprocess_info:
+        return LoginOutput(status="success", otp="cached")
+
+    # === Wait for OTP (replay-safe) ===
+    otp_value = await asyncio.wait_for(ctx.promise("otp_wait"), timeout=300)  # 5 minutes
+    logger.info(f"🔐 Received OTP from handler: {otp_value}")
+
+    # === Write OTP to file for subprocess to read ===
+    async def write_otp_and_wait():
+        # Write OTP to coordination file
+        with open(otp_file, "w") as f:
+            f.write(otp_value)
+        logger.info(f"📝 OTP written to {otp_file}")
+
+        # Wait for result file with polling
+        max_wait_time = 5 * 60 * 60  # 5 hours in seconds
+        start_time = asyncio.get_event_loop().time()
+
+        while True:
+            current_time = asyncio.get_event_loop().time()
+            if current_time - start_time > max_wait_time:
+                logger.error("⏰ Subprocess timeout after 5 hours")
+                # Clean up coordination files
+                for file_path in [otp_file, result_file]:
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+                raise Exception("Subprocess execution timed out after 5 hours")
+
+            # Check if result file exists
+            if os.path.exists(result_file):
+                try:
+                    with open(result_file) as f:
+                        result = json.loads(f.read())
+
+                    # Only return if it's a final status
+                    if result.get("status") in ["success", "error"]:
+                        # Clean up coordination files
+                        for file_path in [otp_file, result_file]:
+                            if os.path.exists(file_path):
+                                os.remove(file_path)
+
+                        if result.get("status") != "success":
+                            raise Exception(result.get("message", "Login failed in subprocess"))
+                        return result
+                except Exception as e:
+                    logger.exception("🧨 Failed to parse subprocess result")
+                    raise Exception(f"Failed to parse subprocess result: {e}")
+
+            # Wait before checking again
+            await asyncio.sleep(10 * 60)  # Check every 10 minutes
+
+    result = await ctx.run("write_otp_and_wait", write_otp_and_wait)
+
+    return LoginOutput(status="success", otp=otp_value)
 
 
+# === OTP Handler ===
 @login_wf.handler(name="receive_otp")
 async def receive_otp(ctx, otp_data: OTPInput):
     logger = logging.getLogger(__name__)
-    logger.info(f"Received OTP: {otp_data.otp}")
-    otp_promise = ctx.promise("otp_wait")
-    await otp_promise.resolve(otp_data.otp)
+    logger.info(f"📨 Received OTP: {otp_data.otp}")
+    await ctx.promise("otp_wait").resolve(otp_data.otp)
     return {"status": "otp_received"}
 
 
+# === Completion Handler ===
 @login_wf.handler(name="complete_workflow")
 async def complete_workflow(ctx):
     logger = logging.getLogger(__name__)
-    logger.info("✅ Workflow completed successfully.")
-    complete_promise = ctx.promise("complete_wait")
-    await complete_promise.resolve("done")  # Any value is fine
+    logger.info("✅ Workflow marked as complete.")
+    await ctx.promise("complete_wait").resolve("done")
     return {"status": "workflow_completed"}
